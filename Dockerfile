@@ -19,4 +19,4 @@ ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_SERVER_HEADLESS=true
 ENV PORT=8501
 # Run Streamlit on port 8501
-CMD ["tgcf-web"]
+CMD tgcf-web
