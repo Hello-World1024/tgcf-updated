@@ -34,7 +34,7 @@ class HealthHandler(BaseHTTPRequestHandler):
         # Suppress default logging
         pass
 
-def start_health_server(port=8080):
+def start_health_server(port=8081):
     """Start the health check server."""
     global start_time
     start_time = time.time()

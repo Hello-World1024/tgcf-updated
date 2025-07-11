@@ -13,6 +13,7 @@ COPY . .
 RUN poetry build && \
     /venv/bin/pip install --upgrade pip wheel setuptools &&\
     /venv/bin/pip install dist/*.whl
-EXPOSE 8501
-# Run both the web server and health server together
-CMD ["/bin/sh", "-c", "tgcf-web & python health_server.py & python keep_alive.py"]
+EXPOSE 8080
+ENV SERVICE_URL=http://localhost:8081
+# Run Streamlit on port 8080 (primary port) and health server on 8081
+CMD ["/bin/sh", "-c", "tgcf-web --server.port=8080 & python health_server.py & python keep_alive.py"]
