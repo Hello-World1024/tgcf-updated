@@ -12,4 +12,6 @@ def main():
     os.environ["STREAMLIT_THEME_BASE"] = CONFIG.theme
     os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
     os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
-    os.system(f"streamlit run {path}")
+    # Set port to 8080 for Render deployment
+    port = os.environ.get("STREAMLIT_SERVER_PORT", "8080")
+    os.system(f"streamlit run {path} --server.port={port} --server.address=0.0.0.0")
