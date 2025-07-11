@@ -13,9 +13,10 @@ COPY . .
 RUN poetry build && \
     /venv/bin/pip install --upgrade pip wheel setuptools &&\
     /venv/bin/pip install dist/*.whl
-EXPOSE 8080
-ENV STREAMLIT_SERVER_PORT=8080
+EXPOSE 8501
+ENV STREAMLIT_SERVER_PORT=8501
 ENV STREAMLIT_SERVER_ADDRESS=0.0.0.0
 ENV STREAMLIT_SERVER_HEADLESS=true
-# Run Streamlit on port 8080 (primary) with health check on 8081
-CMD ["/bin/sh", "-c", "python health_check.py & exec tgcf-web"]
+ENV PORT=8501
+# Run Streamlit on port 8501
+CMD ["tgcf-web"]
