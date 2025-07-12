@@ -185,20 +185,12 @@ class RandomMessageHandler:
                 return
             
             destinations = dest_data.get("dests", [])
-            watermark_text = dest_data.get("watermark_text", "")
             
             # Apply plugins to the message
-            tm = await apply_plugins(message)
+            tm = await apply_plugins(message, dest_data)
             if not tm:
                 logging.warning("Message filtered out by plugins")
                 return
-            
-            # Add watermark if configured
-            if watermark_text:
-                if tm.text:
-                    tm.text = f"{tm.text}\n\n{watermark_text}"
-                else:
-                    tm.text = watermark_text
             
             # Add random message indicator
             random_indicator = "\n\n📱 Random from archive"

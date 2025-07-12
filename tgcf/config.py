@@ -32,7 +32,9 @@ class Forward(BaseModel):
     offset: int = 0
     end: Optional[int] = 0
     forwards_per_day: Optional[int] = 0
-    watermark_text: Optional[str] = ""
+    
+    # Per-connection watermark enable/disable
+    watermark_enabled: bool = True
 
 
 class LiveSettings(BaseModel):
@@ -186,7 +188,7 @@ async def load_from_to(
 
     Returns:
         Dict: key = chat id of source
-                value = {"dests": List of chat ids of destinations, "limit": forwards_per_day, "watermark_text": watermark_text}
+                value = {"dests": List of chat ids of destinations, "limit": forwards_per_day, "watermark_enabled": watermark_enabled}
 
     Notes:
     -> The Forward objects may contain username/phn no/links
@@ -209,7 +211,7 @@ async def load_from_to(
         from_to_dict[src] = {
             "dests": [await _(dest) for dest in forward.dest],
             "limit": forward.forwards_per_day,
-            "watermark_text": forward.watermark_text,
+            "watermark_enabled": forward.watermark_enabled,
         }
     logging.info(f"From to dict is {from_to_dict}")
     return from_to_dict
@@ -228,6 +230,11 @@ def setup_mongo(client):
     mycol = mydb[MONGO_COL_NAME]
     if not mycol.find_one({"_id": 0}):
         mycol.insert_one({"_id": 0, "author": "tgcf", "config": Config().dict()})
+
+    # Initialize state manager with MongoDB client
+    from tgcf.state_manager import initialize_state_manager
+    initialize_state_manager(client)
+    logging.info("State manager initialized with MongoDB")
 
     return mycol
 

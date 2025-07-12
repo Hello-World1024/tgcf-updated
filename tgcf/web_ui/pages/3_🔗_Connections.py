@@ -91,11 +91,20 @@ if check_password(st):
                         key=f"forwards_per_day {con}",
                     )
 
-                    CONFIG.forwards[i].watermark_text = st.text_input(
-                        "Watermark Text",
-                        value=CONFIG.forwards[i].watermark_text or "",
-                        key=f"watermark_text {con}",
+                with st.expander("Watermark Settings"):
+                    CONFIG.forwards[i].watermark_enabled = st.checkbox(
+                        "Enable watermark plugin for this connection",
+                        value=getattr(CONFIG.forwards[i], 'watermark_enabled', True),
+                        key=f"watermark_enabled {con}",
+                        help="When enabled, the global watermark plugin settings will be applied to this connection"
                     )
+                    
+                    if CONFIG.forwards[i].watermark_enabled:
+                        st.success("✅ Watermark plugin will be applied to media files in this connection")
+                        st.info("Configure watermark image and settings in the Plugins page")
+                    else:
+                        st.warning("⚠️ Watermark plugin is disabled for this connection")
+                        st.info("Media files will be forwarded without watermark")
 
                 with st.expander("Past Mode Settings"):
                     CONFIG.forwards[i].offset = int(

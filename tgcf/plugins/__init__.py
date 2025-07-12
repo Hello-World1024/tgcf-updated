@@ -30,6 +30,7 @@ class TgcfMessage:
         self.cleanup = False
         self.reply_to = None
         self.client = self.message.client
+        self.forward = {}  # Connection settings for per-connection plugins
 
     async def get_file(self) -> str:
         """Downloads the file in the message and returns the path where its saved."""
@@ -113,9 +114,13 @@ async def load_async_plugins() -> None:
                 logging.info(f"Plugin {id} asynchronously loaded")
 
 
-async def apply_plugins(message: Message) -> TgcfMessage:
+async def apply_plugins(message: Message, connection_settings: Dict[str, Any] = None) -> TgcfMessage:
     """Apply all loaded plugins to a message."""
     tm = TgcfMessage(message)
+    
+    # Pass connection settings to the message for plugin access
+    if connection_settings:
+        tm.forward = connection_settings
 
     for _id, plugin in plugins.items():
         try:

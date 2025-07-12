@@ -17,8 +17,10 @@ from tgcf.plugins import apply_plugins, load_async_plugins
 from tgcf.utils import clean_session_files, send_message
 from tgcf import forward_count
 from tgcf.random_handler import RandomMessageHandler
+from tgcf.state_manager import get_state_manager
 import asyncio
 import time
+import hashlib
 from datetime import datetime, timedelta
 
 # Rate limiting for Render optimization
@@ -65,7 +67,6 @@ async def new_message_handler(event: Union[Message, events.NewMessage]) -> None:
     forward_data = config.from_to.get(chat_id)
     limit = forward_data.get("limit")
     dest = forward_data.get("dests")
-    watermark_text = forward_data.get("watermark_text")
 
     if limit and limit > 0:
         count = forward_count.get_forward_count(chat_id)
@@ -87,15 +88,9 @@ async def new_message_handler(event: Union[Message, events.NewMessage]) -> None:
             del st.stored[key]
             break
 
-    tm = await apply_plugins(message)
+    tm = await apply_plugins(message, forward_data)
     if not tm:
         return
-
-    if watermark_text:
-        if tm.text:
-            tm.text = f"{tm.text}\n\n{watermark_text}"
-        else:
-            tm.text = watermark_text
 
     if event.is_reply:
         r_event = st.DummyEvent(chat_id, event.reply_to_msg_id)
@@ -110,6 +105,9 @@ async def new_message_handler(event: Union[Message, events.NewMessage]) -> None:
 
     if limit and limit > 0:
         forward_count.increment_forward_count(chat_id)
+        # Save forward counts to state
+        state_manager = get_state_manager()
+        state_manager.save_forward_counts(forward_count.forward_counts)
 
     tm.clear()
 
@@ -127,7 +125,8 @@ async def edited_message_handler(event) -> None:
 
     event_uid = st.EventUid(event)
 
-    tm = await apply_plugins(message)
+    forward_data = config.from_to.get(chat_id)
+    tm = await apply_plugins(message, forward_data)
 
     if not tm:
         return
@@ -143,7 +142,7 @@ async def edited_message_handler(event) -> None:
                 await msg.edit(tm.text)
         return
 
-    dest = config.from_to.get(chat_id)
+    dest = forward_data.get("dests")
 
     for d in dest:
         await send_message(d, tm)
@@ -175,6 +174,19 @@ ALL_EVENTS = {
 
 async def start_sync() -> None:
     """Start tgcf live sync."""
+    # Initialize state manager
+    state_manager = get_state_manager()
+    
+    # Load previous application state if available
+    app_state = state_manager.load_application_state()
+    if app_state:
+        logging.info(f"Resuming from previous session: {app_state.get('running_since')}")
+        # Load forward counts from previous session
+        saved_counts = state_manager.load_forward_counts()
+        if saved_counts:
+            forward_count.forward_counts.update(saved_counts)
+            logging.info(f"Restored forward counts: {saved_counts}")
+    
     # clear past session files
     clean_session_files()
 
@@ -222,15 +234,81 @@ async def start_sync() -> None:
         )
     config.from_to = await config.load_from_to(client, config.CONFIG.forwards)
     
+    # Save initial application state
+    config_hash = hashlib.md5(str(CONFIG.dict()).encode()).hexdigest()
+    active_forwards = list(config.from_to.keys())
+    state_manager.save_application_state(
+        mode="live",
+        config_hash=config_hash,
+        running_since=datetime.utcnow(),
+        active_forwards=active_forwards
+    )
+    
     # Initialize and start random message handler
     random_handler = RandomMessageHandler(client)
+    
+    # Periodic state saving task
+    async def periodic_state_save():
+        while True:
+            await asyncio.sleep(60)  # Save every minute
+            try:
+                # Save current forward counts
+                state_manager.save_forward_counts(forward_count.forward_counts)
+                
+                # Update heartbeat
+                state_manager.save_application_state(
+                    mode="live",
+                    config_hash=config_hash,
+                    running_since=datetime.utcnow(),
+                    active_forwards=active_forwards
+                )
+                
+                # Save random handler states
+                for chat_id in active_forwards:
+                    if hasattr(random_handler, 'random_states') and chat_id in random_handler.random_states:
+                        state = random_handler.random_states[chat_id]
+                        state_manager.save_random_message_state(
+                            chat_id=chat_id,
+                            last_random_time=state.get('last_random_time', datetime.utcnow()),
+                            random_count=state.get('random_count', 0),
+                            total_sent=state.get('total_sent', 0)
+                        )
+                        
+                logging.debug("Periodic state save completed")
+            except Exception as e:
+                logging.error(f"Error during periodic state save: {e}")
+    
+    # Start periodic state saving
+    state_save_task = asyncio.create_task(periodic_state_save())
+    
     try:
         await random_handler.start()
         logging.info("Random message handler started successfully")
         
         # Run the client until disconnected
         await client.run_until_disconnected()
+    except KeyboardInterrupt:
+        logging.info("Received keyboard interrupt, shutting down gracefully...")
+        state_manager.mark_session_ended("keyboard_interrupt")
+    except Exception as e:
+        logging.error(f"Unexpected error: {e}")
+        state_manager.mark_session_ended(f"error: {str(e)}")
     finally:
+        # Cancel periodic state saving
+        state_save_task.cancel()
+        try:
+            await state_save_task
+        except asyncio.CancelledError:
+            pass
+        
+        # Final state save
+        state_manager.save_forward_counts(forward_count.forward_counts, force_save=True)
+        
         # Clean up random handler
         await random_handler.stop()
         logging.info("Random message handler stopped")
+        
+        # Clean up old sessions
+        state_manager.cleanup_old_sessions()
+        
+        logging.info("Shutdown complete")

@@ -27,6 +27,7 @@ verlat = "^0.1.0"
 streamlit = "^1.15.2"
 PyYAML = "^6.0"
 pymongo = "^4.3.3"
+psutil = "^5.9.0"
 
 [tool.poetry.dev-dependencies]
 black = {version = "^22.10.0", allow-prereleases = true}

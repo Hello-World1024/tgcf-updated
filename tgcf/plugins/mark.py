@@ -184,6 +184,21 @@ class TgcfMark(TgcfPlugin):
         if not tm.file_type in ["gif", "video", "photo"]:
             return tm
         
+        # Check if watermark is enabled for this connection
+        if hasattr(tm, 'forward') and tm.forward:
+            connection_settings = tm.forward
+            if not connection_settings.get('watermark_enabled', True):
+                logging.info("Watermark disabled for this connection, skipping watermark")
+                return tm
+        else:
+            # Default behavior if no connection settings available
+            logging.debug("No connection settings found, proceeding with watermark")
+        
+        # Use global plugin settings
+        watermark_image = self.data.image
+        watermark_position = self.data.position
+        watermark_frame_rate = self.data.frame_rate
+
         downloaded_file = await tm.get_file()
         base = File(downloaded_file)
         
@@ -191,64 +206,44 @@ class TgcfMark(TgcfPlugin):
         
         try:
             # Handle different image sources
-            if self.data.image.startswith("https://"):
+            if watermark_image.startswith("https://"):
                 # Download from URL
-                if download_image(self.data.image, "image.png"):
+                if download_image(watermark_image, "image.png"):
                     overlay_file = "image.png"
                     # Save downloaded image to MongoDB for future use
                     save_image_to_mongo("image.png", "downloaded_watermark")
                     
-            elif self.data.image.startswith("data:image") or len(self.data.image) > 100:
+            elif watermark_image.startswith("data:image") or len(watermark_image) > 100:
                 # Handle base64 data
                 temp_filename = "base64_watermark.png"
-                if create_image_from_base64(self.data.image, temp_filename):
+                if create_image_from_base64(watermark_image, temp_filename):
                     overlay_file = temp_filename
                     # Save to MongoDB
                     save_image_to_mongo(temp_filename, "base64_watermark")
                     
-            elif os.path.exists(self.data.image):
+            elif os.path.exists(watermark_image):
                 # Use existing file
-                overlay_file = self.data.image
+                overlay_file = watermark_image
                 # Save to MongoDB for persistence
-                save_image_to_mongo(self.data.image, "local_watermark")
+                save_image_to_mongo(watermark_image, "local_watermark")
                 
-            elif self.data.image.startswith("mongodb:"):
+            elif watermark_image.startswith("mongodb:"):
                 # Load specific image from MongoDB
-                image_name = self.data.image.split(":", 1)[1]
+                image_name = watermark_image.split(":", 1)[1]
                 stored_file = load_image_from_mongo(image_name)
                 if stored_file:
                     overlay_file = stored_file
-                    
-            elif self.data.image == "mongodb_stored":
-                # Try to load any stored image from MongoDB
-                stored_file = load_image_from_mongo("uploaded_watermark")
-                if stored_file:
-                    overlay_file = stored_file
-                elif load_image_from_mongo("downloaded_watermark"):
-                    overlay_file = load_image_from_mongo("downloaded_watermark")
-                elif load_image_from_mongo("base64_watermark"):
-                    overlay_file = load_image_from_mongo("base64_watermark")
-                elif load_image_from_mongo("local_watermark"):
-                    overlay_file = load_image_from_mongo("local_watermark")
                     
             else:
                 # Fallback: try to load from MongoDB storage
                 stored_file = load_image_from_mongo("watermark")
                 if stored_file:
                     overlay_file = stored_file
-                elif load_image_from_mongo("uploaded_watermark"):
-                    overlay_file = load_image_from_mongo("uploaded_watermark")
-                elif load_image_from_mongo("downloaded_watermark"):
-                    overlay_file = load_image_from_mongo("downloaded_watermark")
-                elif load_image_from_mongo("base64_watermark"):
-                    overlay_file = load_image_from_mongo("base64_watermark")
-                elif load_image_from_mongo("local_watermark"):
-                    overlay_file = load_image_from_mongo("local_watermark")
-            
+
             if overlay_file and os.path.exists(overlay_file):
                 overlay = File(overlay_file)
-                wtm = Watermark(overlay, self.data.position)
-                tm.new_file = apply_watermark(base, wtm, frame_rate=self.data.frame_rate)
+                wtm = Watermark(overlay, watermark_position)
+                tm.new_file = apply_watermark(base, wtm, frame_rate=watermark_frame_rate)
                 
                 # Clean up temporary files
                 if overlay_file.startswith("temp_") or overlay_file in ["base64_watermark.png", "image.png"]:
@@ -262,3 +257,6 @@ class TgcfMark(TgcfPlugin):
         cleanup(downloaded_file)
         tm.cleanup = True
         return tm
+
+
+# End of file
