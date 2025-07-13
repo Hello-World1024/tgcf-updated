@@ -23,6 +23,7 @@ class RandomMessageHandler:
         self.client = client
         self.is_running = False
         self.tasks: Dict[int, asyncio.Task] = {}
+        self.random_states: Dict[int, Dict] = {}  # Store state for each source
         
     async def start(self):
         """Start random message posting for all configured sources."""
@@ -32,6 +33,30 @@ class RandomMessageHandler:
             
         self.is_running = True
         logging.info("Starting random message handler")
+        
+        # Load previous states if available
+        try:
+            from tgcf.state_manager import get_state_manager
+            state_manager = get_state_manager()
+            
+            for source_str in CONFIG.live.random_active_sources:
+                source_id = int(source_str) if source_str.lstrip('-').isdigit() else source_str
+                source_id = await config.get_id(self.client, source_id)
+                
+                # Load previous state for this source
+                prev_state = state_manager.load_random_message_state(source_id)
+                if prev_state:
+                    self.random_states[source_id] = prev_state
+                    logging.info(f"Loaded previous state for source {source_id}")
+                else:
+                    # Initialize new state
+                    self.random_states[source_id] = {
+                        'last_random_time': None,
+                        'random_count': 0,
+                        'total_sent': 0
+                    }
+        except Exception as e:
+            logging.error(f"Error loading random states: {e}")
         
         # Start tasks for each active source
         for source_str in CONFIG.live.random_active_sources:
@@ -95,10 +120,17 @@ class RandomMessageHandler:
                         await self._post_random_message(source_id, message)
                         total_posted += 1
                         
-                        # Update counter
+                        # Update counter for each message
                         if source_id not in st.random_message_count:
                             st.random_message_count[source_id] = 0
                         st.random_message_count[source_id] += 1
+                        
+                        # Update state tracking
+                        if source_id in self.random_states:
+                            from datetime import datetime
+                            self.random_states[source_id]['last_random_time'] = datetime.utcnow()
+                            self.random_states[source_id]['random_count'] = st.random_message_count[source_id]
+                            self.random_states[source_id]['total_sent'] = self.random_states[source_id].get('total_sent', 0) + 1
                         
                         logging.info(f"Posted random message from source {source_id}, total today: {st.random_message_count[source_id]}")
                         

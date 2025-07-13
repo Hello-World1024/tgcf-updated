@@ -6,6 +6,9 @@ from pymongo import MongoClient
 
 FORWARD_COUNT_COL_NAME = "forward_counts"
 
+# In-memory forward counts dictionary for session persistence
+forward_counts = {}
+
 if MONGO_CON_STR:
     client = MongoClient(MONGO_CON_STR)
     db = client[MONGO_DB_NAME]
