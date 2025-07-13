@@ -225,7 +225,7 @@ class RandomMessageHandler:
                 return
             
             # Add random message indicator
-            random_indicator = "\n\n📱 Random from archive"
+            random_indicator = "\n\n📱 @starteralinks"
             if tm.text:
                 tm.text = f"{tm.text}{random_indicator}"
             else:
