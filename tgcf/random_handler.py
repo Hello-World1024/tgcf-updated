@@ -14,6 +14,7 @@ from tgcf import config, storage as st
 from tgcf.config import CONFIG
 from tgcf.plugins import apply_plugins
 from tgcf.utils import send_message
+from tgcf.forward_count import get_random_message_count, increment_random_message_count
 
 
 class RandomMessageHandler:
