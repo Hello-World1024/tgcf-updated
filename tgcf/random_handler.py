@@ -4,6 +4,7 @@ import asyncio
 import logging
 import random
 import time
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
 from telethon import TelegramClient
@@ -24,6 +25,8 @@ class RandomMessageHandler:
         self.is_running = False
         self.tasks: Dict[int, asyncio.Task] = {}
         self.random_states: Dict[int, Dict] = {}  # Store state for each source
+        self.last_reset_date = None  # Track when counters were last reset
+        self.daily_reset_task = None  # Task for daily reset
         
     async def start(self):
         """Start random message posting for all configured sources."""
@@ -33,6 +36,9 @@ class RandomMessageHandler:
             
         self.is_running = True
         logging.info("Starting random message handler")
+        
+        # Initialize daily counter management
+        await self._initialize_daily_counters()
         
         # Load previous states if available
         try:
@@ -58,6 +64,11 @@ class RandomMessageHandler:
         except Exception as e:
             logging.error(f"Error loading random states: {e}")
         
+        # Start daily reset task
+        if self.daily_reset_task is None:
+            self.daily_reset_task = asyncio.create_task(self._daily_reset_scheduler())
+            logging.info("Started daily counter reset scheduler")
+        
         # Start tasks for each active source
         for source_str in CONFIG.live.random_active_sources:
             try:
@@ -78,6 +89,15 @@ class RandomMessageHandler:
         """Stop all random message posting tasks."""
         self.is_running = False
         
+        # Stop daily reset task
+        if self.daily_reset_task and not self.daily_reset_task.done():
+            self.daily_reset_task.cancel()
+            try:
+                await self.daily_reset_task
+            except asyncio.CancelledError:
+                pass
+            logging.info("Stopped daily reset scheduler")
+        
         for source_id, task in self.tasks.items():
             if not task.done():
                 task.cancel()
@@ -96,12 +116,17 @@ class RandomMessageHandler:
             total_posted = 0
             
             while self.is_running:
+                # Check for daily reset before checking limits
+                await self._check_and_reset_daily_counters()
+                
                 # Check if we've reached the daily limit
                 if CONFIG.live.random_total_limit > 0:
-                    current_count = st.random_message_count.get(source_id, 0)
+                    current_count = self._get_daily_count(source_id)
                     if current_count >= CONFIG.live.random_total_limit:
-                        logging.info(f"Daily random message limit reached for source {source_id}")
-                        break
+                        logging.info(f"Daily random message limit reached for source {source_id} (count: {current_count})")
+                        # Wait longer when limit is reached, but keep checking for daily reset
+                        await asyncio.sleep(min(CONFIG.live.random_delay, 3600))  # Wait max 1 hour
+                        continue
                 
                 # Get random messages from the source
                 messages = await self._get_random_messages(source_id, CONFIG.live.random_count)
@@ -120,25 +145,23 @@ class RandomMessageHandler:
                         await self._post_random_message(source_id, message)
                         total_posted += 1
                         
-                        # Update counter for each message
-                        if source_id not in st.random_message_count:
-                            st.random_message_count[source_id] = 0
-                        st.random_message_count[source_id] += 1
+                        # Update counter for each message (with date tracking)
+                        self._increment_daily_count(source_id)
                         
                         # Update state tracking
                         if source_id in self.random_states:
-                            from datetime import datetime
                             self.random_states[source_id]['last_random_time'] = datetime.utcnow()
-                            self.random_states[source_id]['random_count'] = st.random_message_count[source_id]
+                            self.random_states[source_id]['random_count'] = self._get_daily_count(source_id)
                             self.random_states[source_id]['total_sent'] = self.random_states[source_id].get('total_sent', 0) + 1
                         
-                        logging.info(f"Posted random message from source {source_id}, total today: {st.random_message_count[source_id]}")
+                        current_count = self._get_daily_count(source_id)
+                        logging.info(f"Posted random message from source {source_id}, total today: {current_count}")
                         
                         # Check if we've reached the limit
                         if (CONFIG.live.random_total_limit > 0 and 
-                            st.random_message_count[source_id] >= CONFIG.live.random_total_limit):
+                            current_count >= CONFIG.live.random_total_limit):
                             logging.info(f"Daily random message limit reached for source {source_id}")
-                            return
+                            break  # Break inner loop to continue with delay and reset check
                             
                     except Exception as e:
                         logging.error(f"Error posting random message from source {source_id}: {e}")
@@ -245,10 +268,194 @@ class RandomMessageHandler:
             logging.error(f"Error posting random message: {e}")
 
 
+    async def _initialize_daily_counters(self):
+        """Initialize daily counter management."""
+        try:
+            current_date = datetime.now().date()
+            
+            # Initialize date tracking in storage if not exists
+            if not hasattr(st, 'random_message_dates'):
+                st.random_message_dates = {}
+            
+            # Check if we need to reset counters (new day)
+            if (not hasattr(st, 'last_counter_reset_date') or 
+                st.last_counter_reset_date != current_date):
+                
+                logging.info(f"Initializing daily counters for date: {current_date}")
+                st.random_message_count.clear()
+                st.random_message_dates.clear()
+                st.last_counter_reset_date = current_date
+                
+                # Save reset state to MongoDB
+                try:
+                    from tgcf.state_manager import get_state_manager
+                    state_manager = get_state_manager()
+                    state_manager.save_state("daily_reset", {
+                        "last_reset_date": current_date.isoformat(),
+                        "reset_timestamp": datetime.now().isoformat()
+                    })
+                except Exception as e:
+                    logging.warning(f"Could not save reset state to MongoDB: {e}")
+                
+            self.last_reset_date = current_date
+            logging.info(f"Daily counter system initialized for {current_date}")
+            
+        except Exception as e:
+            logging.error(f"Error initializing daily counters: {e}")
+    
+    async def _daily_reset_scheduler(self):
+        """Background task to handle daily counter resets."""
+        while self.is_running:
+            try:
+                current_time = datetime.now()
+                current_date = current_time.date()
+                
+                # Calculate time until next midnight
+                next_midnight = datetime.combine(current_date + timedelta(days=1), datetime.min.time())
+                seconds_until_midnight = (next_midnight - current_time).total_seconds()
+                
+                # Wait until midnight (or check every hour if it's more than an hour away)
+                sleep_time = min(seconds_until_midnight, 3600)  # Check at least every hour
+                
+                logging.debug(f"Daily reset scheduler: sleeping for {sleep_time:.0f} seconds")
+                await asyncio.sleep(sleep_time)
+                
+                # Check if date has changed
+                await self._check_and_reset_daily_counters()
+                
+            except asyncio.CancelledError:
+                logging.info("Daily reset scheduler cancelled")
+                break
+            except Exception as e:
+                logging.error(f"Error in daily reset scheduler: {e}")
+                await asyncio.sleep(300)  # Wait 5 minutes before retrying
+    
+    async def _check_and_reset_daily_counters(self):
+        """Check if daily counters need to be reset."""
+        try:
+            current_date = datetime.now().date()
+            
+            if (not hasattr(st, 'last_counter_reset_date') or 
+                st.last_counter_reset_date != current_date):
+                
+                logging.info(f"Daily reset triggered! Resetting counters for new date: {current_date}")
+                
+                # Reset all counters
+                old_count = len(st.random_message_count)
+                st.random_message_count.clear()
+                
+                if hasattr(st, 'random_message_dates'):
+                    st.random_message_dates.clear()
+                else:
+                    st.random_message_dates = {}
+                
+                st.last_counter_reset_date = current_date
+                self.last_reset_date = current_date
+                
+                logging.info(f"✅ Daily counters reset! Cleared {old_count} source counters for new date: {current_date}")
+                
+                # Save reset state to MongoDB
+                try:
+                    from tgcf.state_manager import get_state_manager
+                    state_manager = get_state_manager()
+                    state_manager.save_state("daily_reset", {
+                        "last_reset_date": current_date.isoformat(),
+                        "reset_timestamp": datetime.now().isoformat(),
+                        "sources_reset": old_count
+                    })
+                    
+                    # Force save empty counters
+                    state_manager.save_state("random_counters", {
+                        "date": current_date.isoformat(),
+                        "counters": {},
+                        "last_updated": datetime.now().isoformat()
+                    })
+                    
+                except Exception as e:
+                    logging.warning(f"Could not save reset state to MongoDB: {e}")
+                    
+        except Exception as e:
+            logging.error(f"Error checking/resetting daily counters: {e}")
+    
+    def _get_daily_count(self, source_id: int) -> int:
+        """Get the current daily count for a source with date validation."""
+        try:
+            current_date = datetime.now().date()
+            
+            # If date tracking doesn't exist, initialize it
+            if not hasattr(st, 'random_message_dates'):
+                st.random_message_dates = {}
+            
+            # Check if this source has a recorded date
+            recorded_date = st.random_message_dates.get(source_id)
+            
+            # If no date recorded or date is old, reset this source's counter
+            if recorded_date != current_date:
+                st.random_message_count[source_id] = 0
+                st.random_message_dates[source_id] = current_date
+                return 0
+            
+            return st.random_message_count.get(source_id, 0)
+            
+        except Exception as e:
+            logging.error(f"Error getting daily count for source {source_id}: {e}")
+            return 0
+    
+    def _increment_daily_count(self, source_id: int):
+        """Increment the daily count for a source with date tracking."""
+        try:
+            current_date = datetime.now().date()
+            
+            # Initialize if needed
+            if not hasattr(st, 'random_message_dates'):
+                st.random_message_dates = {}
+            
+            # Reset counter if date is old
+            recorded_date = st.random_message_dates.get(source_id)
+            if recorded_date != current_date:
+                st.random_message_count[source_id] = 0
+                st.random_message_dates[source_id] = current_date
+            
+            # Increment counter
+            if source_id not in st.random_message_count:
+                st.random_message_count[source_id] = 0
+            st.random_message_count[source_id] += 1
+            st.random_message_dates[source_id] = current_date
+            
+        except Exception as e:
+            logging.error(f"Error incrementing daily count for source {source_id}: {e}")
+
+
 def reset_daily_counters():
-    """Reset daily random message counters."""
-    st.random_message_count.clear()
-    logging.info("Reset daily random message counters")
+    """Manual reset of daily random message counters (for web UI button)."""
+    try:
+        current_date = datetime.now().date()
+        old_count = len(st.random_message_count) if hasattr(st, 'random_message_count') else 0
+        
+        st.random_message_count.clear()
+        
+        if not hasattr(st, 'random_message_dates'):
+            st.random_message_dates = {}
+        st.random_message_dates.clear()
+        st.last_counter_reset_date = current_date
+        
+        logging.info(f"Manual reset: Cleared {old_count} random message counters for date {current_date}")
+        
+        # Save to MongoDB
+        try:
+            from tgcf.state_manager import get_state_manager
+            state_manager = get_state_manager()
+            state_manager.save_state("manual_reset", {
+                "reset_date": current_date.isoformat(),
+                "reset_timestamp": datetime.now().isoformat(),
+                "sources_reset": old_count,
+                "reset_type": "manual"
+            })
+        except Exception as e:
+            logging.warning(f"Could not save manual reset state: {e}")
+            
+    except Exception as e:
+        logging.error(f"Error in manual daily counter reset: {e}")
 
 
 # Global instance
