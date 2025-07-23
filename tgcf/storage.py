@@ -37,5 +37,3 @@ mycol: Collection = None
 # Random message tracking
 random_message_count: Dict[int, int] = {}  # source_id -> count of random messages posted today
 random_message_history: Dict[int, List[int]] = {}  # source_id -> list of used message ids
-random_message_dates: Dict[int, any] = {}  # source_id -> date when counter was last incremented
-last_counter_reset_date = None  # Track when counters were last reset
