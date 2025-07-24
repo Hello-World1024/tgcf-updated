@@ -48,14 +48,20 @@ def get_random_message_count(source_id: int) -> int:
         return 0
     today = datetime.datetime.utcnow().date()
     today_str = today.isoformat()
+    
+    # Debug logging
+    import logging
+    logging.info(f"Checking random message count for source {source_id} on date {today_str}")
+    
     result = forward_counts_col.find_one({
         "source_id": source_id, 
         "date": today_str, 
         "type": "random"
     })
-    if result:
-        return result.get("count", 0)
-    return 0
+    
+    count = result.get("count", 0) if result else 0
+    logging.info(f"Found {count} random messages for source {source_id} today ({today_str})")
+    return count
 
 
 def increment_random_message_count(source_id: int):

@@ -35,7 +35,7 @@ class RandomMessageHandler:
         self.is_running = True
         logging.info("Starting random message handler")
         
-        # Load previous states if available
+        # Load previous states and synchronize counters
         try:
             from tgcf.state_manager import get_state_manager
             state_manager = get_state_manager()
@@ -43,6 +43,11 @@ class RandomMessageHandler:
             for source_str in CONFIG.live.random_active_sources:
                 source_id = int(source_str) if source_str.lstrip('-').isdigit() else source_str
                 source_id = await config.get_id(self.client, source_id)
+                
+                # Synchronize in-memory counter with MongoDB counter
+                current_count = get_random_message_count(source_id)
+                st.random_message_count[source_id] = current_count
+                logging.info(f"Synchronized counter for source {source_id}: {current_count} messages today")
                 
                 # Load previous state for this source
                 prev_state = state_manager.load_random_message_state(source_id)
@@ -53,7 +58,7 @@ class RandomMessageHandler:
                     # Initialize new state
                     self.random_states[source_id] = {
                         'last_random_time': None,
-                        'random_count': 0,
+                        'random_count': current_count,
                         'total_sent': 0
                     }
         except Exception as e:
@@ -74,6 +79,12 @@ class RandomMessageHandler:
                     
             except Exception as e:
                 logging.error(f"Error starting random posting for source {source_str}: {e}")
+        
+        # Start a periodic checker to restart stopped sources
+        if self.tasks:
+            checker_task = asyncio.create_task(self._periodic_limit_checker())
+            self.tasks['_checker'] = checker_task
+            logging.info("Started periodic limit checker")
     
     async def stop(self):
         """Stop all random message posting tasks."""
@@ -99,7 +110,8 @@ class RandomMessageHandler:
             while self.is_running:
                 # Check if we've reached the daily limit
                 if CONFIG.live.random_total_limit > 0:
-                    current_count = st.random_message_count.get(source_id, 0)
+                    from tgcf.forward_count import get_random_message_count
+                    current_count = get_random_message_count(source_id)
                     if current_count >= CONFIG.live.random_total_limit:
                         logging.info(f"Daily random message limit reached for source {source_id}")
                         break
@@ -121,10 +133,11 @@ class RandomMessageHandler:
                         await self._post_random_message(source_id, message)
                         total_posted += 1
                         
-                        # Update counter for each message
+                        # Update counter for each message using both systems
+                        increment_random_message_count(source_id)  # MongoDB counter
                         if source_id not in st.random_message_count:
                             st.random_message_count[source_id] = 0
-                        st.random_message_count[source_id] += 1
+                        st.random_message_count[source_id] += 1  # In-memory counter
                         
                         # Update state tracking
                         if source_id in self.random_states:
@@ -153,6 +166,56 @@ class RandomMessageHandler:
             logging.info(f"Random posting task cancelled for source {source_id}")
         except Exception as e:
             logging.error(f"Error in random poster for source {source_id}: {e}")
+    
+    async def _periodic_limit_checker(self):
+        """Periodically check if stopped sources can be restarted (e.g., after day change)."""
+        try:
+            while self.is_running:
+                await asyncio.sleep(3600)  # Check every hour
+                
+                if not self.is_running:
+                    break
+                    
+                logging.info("Running periodic limit check for stopped sources")
+                
+                # Check each configured source
+                for source_str in CONFIG.live.random_active_sources:
+                    try:
+                        source_id = int(source_str) if source_str.lstrip('-').isdigit() else source_str
+                        source_id = await config.get_id(self.client, source_id)
+                        
+                        # Skip if task is already running
+                        if source_id in self.tasks and not self.tasks[source_id].done():
+                            continue
+                            
+                        # Check if source should be active (under limit)
+                        if CONFIG.live.random_total_limit > 0:
+                            current_count = get_random_message_count(source_id)
+                            if current_count < CONFIG.live.random_total_limit:
+                                # Restart this source's task
+                                logging.info(f"Restarting random posting for source {source_id} (count: {current_count}/{CONFIG.live.random_total_limit})")
+                                
+                                # Synchronize counter
+                                st.random_message_count[source_id] = current_count
+                                
+                                if source_id in config.from_to:
+                                    task = asyncio.create_task(self._random_poster_for_source(source_id))
+                                    self.tasks[source_id] = task
+                                    logging.info(f"Restarted random posting task for source {source_id}")
+                        else:
+                            # No limit, should always be running
+                            if source_id in config.from_to:
+                                task = asyncio.create_task(self._random_poster_for_source(source_id))
+                                self.tasks[source_id] = task
+                                logging.info(f"Restarted random posting task for source {source_id} (no limit)")
+                                
+                    except Exception as e:
+                        logging.error(f"Error checking source {source_str} in periodic check: {e}")
+                        
+        except asyncio.CancelledError:
+            logging.info("Periodic limit checker cancelled")
+        except Exception as e:
+            logging.error(f"Error in periodic limit checker: {e}")
     
     async def _get_random_messages(self, source_id: int, count: int) -> List[Message]:
         """Get random messages from the source chat (Render-optimized)."""
