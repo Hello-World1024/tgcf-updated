@@ -211,15 +211,19 @@ async def start_sync() -> None:
     logging.info(f"config.is_bot={config.is_bot}")
     await config.load_admins(client)
 
-    if CONFIG.use_telegram_bot:
-        command_events = get_events()
-        ALL_EVENTS.update(command_events)
-
+    # Register main forwarding events
     for key, val in ALL_EVENTS.items():
         if config.CONFIG.live.delete_sync is False and key == "deleted":
             continue
         client.add_event_handler(*val)
         logging.info(f"Added event handler for {key}")
+    
+    # Register bot command events separately (these won't conflict with forwarding)
+    if CONFIG.use_telegram_bot:
+        command_events = get_events()
+        for key, val in command_events.items():
+            client.add_event_handler(*val)
+            logging.info(f"Added bot command handler for {key}")
 
     if config.is_bot and const.REGISTER_COMMANDS:
         await client(
